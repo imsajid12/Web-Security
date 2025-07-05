@@ -1,0 +1,12 @@
+Web Recon 
+
+1. DNS Query - Collect dns information such as NS, A, AAA, subdomains and other juicy informations. Also attempt Zone Transfer to collect information.
+2. Subdomain and VHOST enumeration - Identify all avaialble subdomains and vhosts.
+3. Fingerprinting technologies and tech stack details.
+4. Web Spidering
+5. Check robot.txt, sitemap.xml, well-known-uris
+
+6. ffuf 
+Web Directory Scanning --> ffuf -w <wordlist>:FUZZ -u http://SERVER_IP:PORT/FUZZ -recursion -recursion-depth 2 -e .php -v
+Subdomain scanning --> ffuf -w /opt/useful/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u https://FUZZ.target.com/
+VHOST fuzzing --> ffuf -w /opt/useful/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u <target> -H 'Host: FUZZ.target'
