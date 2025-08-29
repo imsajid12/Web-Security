@@ -1,12 +1,48 @@
 Web Recon 
 
-1. DNS Query - Collect dns information such as NS, A, AAA, subdomains and other juicy informations. Also attempt Zone Transfer to collect information.
-2. Subdomain and VHOST enumeration - Identify all avaialble subdomains and vhosts.
-3. Fingerprinting technologies and tech stack details.
-4. Web Spidering
-5. Check robot.txt, sitemap.xml, well-known-uris
+1. DNS Query - Collect dns information such as NS, A, AAA, subdomains and other juicy informations. 
+Also attempt Zone Transfer to collect information.
 
-6. ffuf 
+2. Doman Discovery - To find the root domain of a traget.
+2.1 We can use WHOXY (https://www.whoxy.com/)
+
+2.2 We can use amass
+2.2.1 To get the number of IP ranges hold by the target - 
+      amass intel -org "Target" -v
+
+2.2.2 Enumerate domains and subdomains through asn - 
+      amass intel -asn <asn> -o <output.txt> -v
+
+2.2.3 We can get the ASN from this website and use it with amass to find root domains --> https://bgp.he.net/
+
+3. Subdomain and VHOST enumeration - Identify all avaialble subdomains and vhosts.
+3.1 subfinder -d <target> -o <output.txt>
+
+3.2 amass enum -d <target> -o <output.txt>
+
+3.3 Filter out the data from amass result - 
+    cat amass_sub.txt | grep -Eo "([a-zA-Z0-9.-]+\.)*target\.com" | sort -u
+
+3.4 ffuf Subdomain scanning
+    ffuf -w /opt/useful/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u https://FUZZ.target.com/
+
+3.5 gobuster
+    gobuster dns -d <target> -w <wordlist> -o <output.txt>
+
+3.6 amass
+    amass enum -d <target> -brute -w <wordlist> -o <output.txt> -v
+
+3.7 puredns
+    puredns bruteforce <wordlist> <target> --resolvers <public_ip.txt>
+
+3.8 VHOST fuzzing 
+    ffuf -w /opt/useful/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u <target> -H 'Host: FUZZ.target'
+    
+4. Fingerprinting technologies and tech stack details.
+5. Web Spidering
+6. Check robots.txt, sitemap.xml, well-known-uris
+
+7. ffuf 
 Web Directory Scanning --> ffuf -w <wordlist>:FUZZ -u http://SERVER_IP:PORT/FUZZ -recursion -recursion-depth 2 -e .php -v
-Subdomain scanning --> ffuf -w /opt/useful/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u https://FUZZ.target.com/
-VHOST fuzzing --> ffuf -w /opt/useful/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u <target> -H 'Host: FUZZ.target'
+
+
