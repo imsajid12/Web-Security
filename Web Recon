@@ -1,7 +1,6 @@
 Web Recon 
 
-1. DNS Query - Collect dns information such as NS, A, AAA, subdomains and other juicy informations. 
-Also attempt Zone Transfer to collect information.
+1. DNS Query - Collect dns information such as NS, A, AAA, subdomains and other juicy informations. Also attempt Zone Transfer to collect information.
 
 2. Doman Discovery - To find the root domain of a traget.
 2.1 We can use WHOXY (https://www.whoxy.com/)
@@ -38,6 +37,16 @@ Also attempt Zone Transfer to collect information.
 3.8 VHOST fuzzing 
     ffuf -w /opt/useful/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u <target> -H 'Host: FUZZ.target'
     
+3.9 Creating permutations of subdomains
+      gotator -sub <subdomain.txt> -perm <wordlist> -depth 1 -numbers 0 > <output.txt>
+
+      altdns -i <subdomain.txt> -o <permutated-sub.txt> -w <wordlist> -r -s <output.txt>
+
+3.10 Filter out live domains/subdomains
+    cat <subdomain.txt> | httpx -o <output.txt> -title
+
+4. Finding Origin IP address
+
 4. Fingerprinting technologies and tech stack details.
 5. Web Spidering
 6. Check robots.txt, sitemap.xml, well-known-uris
