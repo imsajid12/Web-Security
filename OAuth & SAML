@@ -85,3 +85,5 @@ SAML Vulnerabilities
 1. Signature Exclusion Attack - Remove ds:Signature from SAML Response.
 2. User Impersonation - Replace Attacker's details with Victim's details in SAML Response.
 3. Signature Wrapping - Add a additional XML Assertion, just before the protected XML Assertion in SAML Response.
+4. XXE
+5. XSTL
