@@ -1,0 +1,82 @@
+Authentication is a process of identifying user's identity before granting them the access, whereas Authorization is a process of verifying a user's access level
+to a resource using an access control policy.
+
+1. OAuth
+OAuth is a commonly used authorization framework that enables websites and web applications to request limited access to a user's account on another application.
+Crucially, OAuth allows the user to grant this access without exposing their login credentials to the requesting application. This means users can fine-tune 
+which data they want to share rather than having to hand over full control of their account to a third party.
+
+1.1. OAuth Entities 
+The OAuth protocol comprises the following acting entities:
+i. The Resource Owner : The entity that owns the resource. This is typically the user
+ii. The Client : The service requesting access to the resource on behalf of the resource owner
+iii. The Authorization Server : The server that authenticates the resource owner and issues access tokens to the client
+iv. The Resource Server : The server hosting the resources the client requests to access
+
+1.2. OAuth Grant Types
+
+1.2.1. Authorization Code Grant
+Step 1: Authorization Request - This grant type starts with the authorization request from the client academy.htb to the authorization server hubgit.htb.
+Step 2: Resource Owner Authentication - The authorization server hubgit.htb will request the user to log in and authorize the client academy.htb to access the requested resources.
+Step 3: Authorization Code Grant - The authorization server redirects the browser to the URL specified in the redirect_uri parameter of the authorization request.
+Step 4: Access Token Request - After obtaining the authorization code, the client requests an access token from the authorization server.
+Step 5: Access Token Grant - The authorization server validates the authorization code and issues a valid access token for the resource server in response to the token request.
+Step 6: Resource Request - The client now holds a valid access token for the resource server and can use this access token to request the resource owner's information.
+Step 7: Resource Response - The resource server validates the access token and responds with the resource owner's information
+
+1.2.2. Implicit Grant
+The implicit code grant is shorter than the authorization code grant as the authorization code exchange is skipped. This results in a more straightforward 
+implementation at the cost of lower security since access tokens are exposed in the browser.
+Step 1: Authorization Request - The implicit grant type starts with a slightly different authorization request compared to the authorization code grant type 
+(The response_type parameter is set to token . All other parameters retain the same meaning.)
+Step 2: Resource Owner Authentication
+The authorization server hubgit.htb will request the user to log in and authorize the client academy.htb to access the requested resources. This is the same as in the authorization code grant.
+Step 3: Access Token Grant
+This step is the main difference from the authorization token grant. Like before, the authorization server redirects the browser to the URL specified in the 
+authorization request's redirect_uri parameter. However, instead of providing an authorization code, this redirect already contains the access token in a URL 
+fragment where it can be extracted using suitable client-side JavaScript code
+Step 4: Resource Request
+The client now holds a valid access token for the resource server and can use this access token to request the resource owner's information. This is the same 
+as in the authorization code grant.
+Step 5: Resource Response
+The resource server validates the access token and responds with the resource owner's information. This is the same as in the authorization code grant
+
+1.3 OAuth Vulnerabilities
+
+1.3.1 Authentication bypass via OAuth implicit flow
+i. Login with your credentials.
+ii. Check for any authentication endpoint, which contains username, token etc
+iii. Replace the username with victim's username.
+
+1.3.2 SSRF via OpenID dynamic client registration
+i. Check for client registration endpoint --> https://<target.com>/.well-known/openid-configuration
+ii. Register a client at the given endpoint 
+POST /<registration_endpoint> HTTP/1.1
+Host: target.com
+Content-Type: application/json
+{
+    "redirect_uris" : [
+        "https://example.com"
+    ]
+}
+iii. Search for the URLs that would fetch the data from server, for eg - logos. Modify the above request
+POST /<registration_endpoint> HTTP/1.1
+Host: target.com
+Content-Type: application/json
+{
+    "redirect_uris" : [
+        "https://example.com"
+    ],
+    "logo_uri":"https://burpcollab.com"
+}
+iv. Retrigger the logo reuest with the client id received in above request.
+v. Check for hits in burp collaborator
+
+1.3.1 Stealing Access Tokens
+
+SAML (Secure Assertion Markup Language)
+SAML is an XML-based open standard for exchanging authentication and authorization data between identity providers (IdPs) and service providers (SPs). 
+SAML enables single sign-on (SSO), allowing users to access multiple applications and services with a single set of credentials. In the SAML workflow, the user's 
+identity is authenticated by the IdP, which then generates a digitally signed assertion containing user attributes and permissions. This assertion is sent to 
+the SP, which validates it and grants access accordingly. SAML is widely used in enterprise environments and web-based applications to streamline 
+authentication processes and enhance security through standardized protocols and assertions.
