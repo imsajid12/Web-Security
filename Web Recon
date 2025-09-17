@@ -47,11 +47,28 @@ Web Recon
 
 4. Finding Origin IP address
 
-4. Fingerprinting technologies and tech stack details.
-5. Web Spidering
-6. Check robots.txt, sitemap.xml, well-known-uris
+5. Fingerprinting technologies and tech stack details.
+6. Web Spidering
+7. Check robots.txt, sitemap.xml, well-known-uris
 
-7. ffuf 
-Web Directory Scanning --> ffuf -w <wordlist>:FUZZ -u http://SERVER_IP:PORT/FUZZ -recursion -recursion-depth 2 -e .php -v
+8. ffuf 
+Web Directory Scanning --> 
+i.ffuf -w <wordlist>:FUZZ -u http://SERVER_IP:PORT/FUZZ -recursion -recursion-depth 2 -e .php -v
+ii. ffuf -w <wordlist>:FUZZ -u <target/FUZZ> -H "<header>"
+iii. ffuf -u <target/FUZZ> -w <wordlist>:FUZZ -fs <status value> -fc 404
+ 
+9. Dirsearch
+Content Discovery --> 
+i. dirsearch -u <target> --exclude-status=403,401 -w <wordlist> -v
+ii. dirsearch -u <target> --exclude-status=403,401 -w <wordlist> -r -v
+Fuzzing Authenticated Endpoints --> dirsearch -u <target> -w <wordlist> -H "<token>" --exclude-status=403 -v
 
+10. Passive Enumeration via GAU
+echo "<target>" | gau > gau_fuzz.txt
+
+11. Passive Enum via waybackurls
+echo <target> | waybackurls > wayback.txt
+
+12. Katana
+katana -u <target> -jc -d 4 -o katana.txt
 
