@@ -1,0 +1,369 @@
+Part 1: What JWT actually is
+A JWT is a self-contained, tamper-evident token. The key word is self-contained — the server doesn't need to look up anything in a database to validate it. Everything the server needs to trust you is inside the token itself. This design decision is what creates the entire attack surface.
+Compare this to a session cookie: with a session ID, the server stores your session data and the cookie is just a lookup key. If someone steals your session ID, the server can invalidate it. With JWT, the server stores nothing — if the token is valid and not expired, the server trusts it unconditionally. You cannot "invalidate" a JWT without additional infrastructure.
+
+The three-part structure:
+A JWT looks like this: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0Iiwicm9sZSI6InVzZXIifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+Three base64url-encoded parts separated by dots: HEADER.PAYLOAD.SIGNATURE
+
+Header — always decodes to something like:
+{
+  "alg": "HS256",
+  "typ": "JWT"
+}
+
+Payload — the claims. Standard ones are sub (subject/user ID), iat (issued at), exp (expiry), iss (issuer). Custom ones are whatever the app adds:
+{
+  "sub": "1234",
+  "role": "user",
+  "iat": 1714000000,
+  "exp": 1714086400
+}
+
+Signature — this is the security mechanism. For HS256:
+HMAC-SHA256(base64url(header) + "." + base64url(payload), secret_key)
+The signature is what prevents tampering. If you change "role": "user" to "role": "admin" in the payload, the signature won't match anymore — unless you know the secret key, or you can trick the server into not checking it properly.
+
+That last clause — "trick the server" — is the entire JWT attack surface.
+
+Part 2: The complete vulnerability map
+There are seven distinct JWT attack classes. Know each one mechanically.
+
+
+Attack 1: Algorithm None (alg: none)
+Concept: The JWT spec includes none as a valid algorithm, meaning "no signature required." Vulnerable libraries accept this.
+How it works:
+Take any valid JWT. Decode the header, change the algorithm:
+{"alg": "none", "typ": "JWT"}
+Re-encode the header. Modify the payload however you want. Remove the signature entirely but keep the trailing dot: eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0Iiwicm9sZSI6ImFkbWluIn0.
+
+A vulnerable server receiving this token checks: "does the algorithm match?" — yes, it's none. "Do I need to verify a signature?" — no, none means no signature. "Is the payload valid?" — yes. Access granted as admin.
+Why it exists: The JWT spec (RFC 7519) included none for cases where integrity is guaranteed by the transport layer. Library implementers then accepted it unconditionally.
+
+Test for it: Manually craft the modified token. Or use jwt_tool:
+python3 jwt_tool.py <token> -X a
+
+Fix: Explicitly whitelist accepted algorithms on the server. Never accept none. In code:
+python
+# WRONG
+jwt.decode(token, key)
+
+# CORRECT
+jwt.decode(token, key, algorithms=["HS256"])
+
+
+Attack 2: Algorithm Confusion — RS256 → HS256
+Concept: This is the most sophisticated and most misunderstood JWT attack. It exploits the difference between symmetric (HS256) and asymmetric (RS256) algorithms.
+
+The difference:
+HS256 (HMAC): one secret key, used for both signing and verification
+RS256 (RSA): private key signs, public key verifies
+
+The attack:
+When a server uses RS256, it publishes its public key (it's public — that's the point). A vulnerable library might accept either HS256 or RS256. If you submit a token claiming alg: HS256, the library uses whatever key it has for verification — which is the public key. If you sign your forged token using HS256 with the public key as the secret, verification passes because HMAC(payload, public_key) == HMAC(payload, public_key).
+
+Step by step:
+Obtain the server's RS256 public key (from /jwks.json, OIDC discovery endpoint, or SSL certificate)
+Forge a new payload with elevated privileges
+Sign it using HS256 with the public key as the HMAC secret
+Set alg: HS256 in the header
+Submit — vulnerable server verifies HS256 signature using its "key" (the public key) and it passes
+
+# Demonstrating the confusion attack
+import jwt
+
+public_key = open('public.pem').read()
+
+forged_token = jwt.encode(
+    {"sub": "admin", "role": "admin"},
+    public_key,           # Using PUBLIC key as HMAC secret
+    algorithm="HS256"     # Claiming HS256, not RS256
+)
+
+Fix: Never allow the client to control which algorithm is used. The algorithm must be hardcoded on the server side, not read from the token header.
+python
+# WRONG — algorithm comes from the token header
+algorithm = decode_header(token)['alg']
+jwt.decode(token, key, algorithms=[algorithm])
+
+# CORRECT — algorithm is fixed server-side
+jwt.decode(token, public_key, algorithms=["RS256"])
+
+
+Attack 3: Weak Secret — HS256 Brute Force
+Concept: HS256 tokens are only as secure as the secret key. If the secret is weak, you can brute-force it offline.
+How it works:
+JWTs are not encrypted — anyone can decode the header and payload. The signature is the only secret part. You can brute-force it completely offline with no server interaction:
+# hashcat — fastest
+hashcat -a 0 -m 16500 <jwt_token> wordlist.txt
+
+# john the ripper
+john --wordlist=wordlist.txt --format=HMAC-SHA256 jwt.txt
+
+# jwt_tool
+python3 jwt_tool.py <token> -C -d wordlist.txt
+
+If secret, password, 1234, jwt_secret, or any dictionary word was used as the key — it falls in seconds.
+
+Why this matters in AppSec: Default configurations in many frameworks use predictable secrets. Laravel used to default to APP_KEY which was often left as the example value. Node.js JWT tutorials commonly show secret as the example and developers forget to change it.
+
+Fix: Minimum 256-bit (32-byte) cryptographically random secret for HS256. Better: switch to RS256 so the signing key never needs to be distributed.
+python
+import secrets
+jwt_secret = secrets.token_hex(32)  # 256-bit random secret
+
+
+Attack 4: kid Header Injection
+Concept: The kid (Key ID) parameter in the JWT header tells the server which key to use for verification. If the server uses the kid value in a database query or file path without sanitization, you get injection.
+
+Two sub-attacks:
+
+SQL Injection via kid:
+{"alg": "HS256", "typ": "JWT", "kid": "' UNION SELECT 'attacker_secret' --"}
+If the server queries: SELECT key FROM keys WHERE id = '<kid>', this returns attacker_secret as the key. You then sign your forged token with attacker_secret and the server verifies it successfully.
+
+Path Traversal via kid:
+{"alg": "HS256", "typ": "JWT", "kid": "../../dev/null"}
+If the server reads a key file based on kid, pointing it to /dev/null means the key is an empty string. You then sign your forged token with an empty string as the secret.
+# Sign with empty string secret
+python3 jwt_tool.py <token> -I -hc kid -hv "../../dev/null" -S hs256 -p ""
+
+Fix: Never use kid value directly in SQL queries or file paths. Maintain an explicit server-side map of allowed key IDs to key values.
+
+
+Attack 5: jku and x5u Header Injection
+Concept: jku (JWK Set URL) tells the server where to fetch the public key for verification. If the server fetches this URL without restriction, you can host your own key set and point the server at it.
+
+How it works:
+Generate your own RSA key pair
+Host your public key as a JWKS (JSON Web Key Set) at a URL you control
+Forge a JWT with "jku": "https://attacker.com/my-keys.json"
+Sign it with your private key
+The server fetches your URL, gets your public key, and verifies successfully
+
+Fix: Maintain a whitelist of allowed jku URLs. Ignore jku from token headers entirely if your architecture allows it.
+
+
+Attack 6: Embedded JWK (jwk header parameter)
+Concept: The jwk header parameter allows embedding a public key directly in the token header. A vulnerable server will use this embedded key for verification.
+
+The attack:
+{
+  "alg": "RS256",
+  "typ": "JWT",
+  "jwk": {
+    "kty": "RSA",
+    "n": "<your_public_key_modulus>",
+    "e": "AQAB"
+  }
+}
+You embed your own public key in the header, sign the token with your matching private key. The server uses the embedded key (your public key) to verify — passes. You're in.
+
+Fix: Never use the jwk header parameter from the token itself for verification. The trusted keys must come from the server's own configuration.
+
+
+Attack 7: Expiry and Claims Manipulation
+Concept: If signature verification is broken (any of the above attacks), claims manipulation becomes the actual payload. Even without signature attacks, some systems don't validate expiry.
+Claims to test:
+{
+  "sub": "1234",
+  "role": "admin",          // Privilege escalation
+  "exp": 9999999999,        // Token never expires
+  "iss": "trusted-service", // Issuer spoofing
+  "aud": "internal-api"     // Audience confusion
+}
+exp manipulation: Some servers don't validate expiry at all. Try replaying old tokens. Try setting exp to a past timestamp — does the server reject it? Try removing exp entirely.
+
+
+
+Part 3: Finding JWT vulnerabilities in real assessments
+This is the methodology you use when you see a JWT in a Burp intercept.
+Step 1 — Identify and decode
+Paste the token into jwt.io or use jwt_tool. Understand every claim. Ask: is role, admin, isAdmin, group, or similar present in the payload? Those are your escalation targets.
+Step 2 — Check algorithm
+What algorithm? HS256 = try brute force + none attack. RS256 = try algorithm confusion. none in the header already = server might be misconfigured.
+Step 3 — Check header parameters
+Is kid, jku, x5u, or jwk present? These are injection points. If kid is present, try SQL injection values and path traversal payloads.
+Step 4 — Try alg: none
+Always try this. Remove the signature, claim none. Many libraries are still vulnerable.
+Step 5 — Brute force the secret (if HS256)
+Run hashcat offline. No server interaction. Takes seconds with a weak secret.
+Step 6 — Check expiry handling
+Send an expired token. Does the server reject it? Send a token with no exp. Does the server accept it?
+Step 7 — Check for token reuse after logout
+Log in, get token. Log out. Replay the token. Does it still work? Most JWTs will — remember, the server stores nothing. This is a design flaw, not always fixable without a denylist.
+
+
+
+Part 4: Fixes — what good JWT implementation looks like
+For interviews, knowing the fix is as important as knowing the attack.
+# Complete secure JWT implementation reference
+
+import jwt
+import secrets
+from datetime import datetime, timedelta
+
+SECRET = secrets.token_hex(32)  # 256-bit random, loaded from env in prod
+
+# SIGNING — always set exp, iat, iss
+def create_token(user_id: str, role: str) -> str:
+    payload = {
+        "sub": user_id,
+        "role": role,
+        "iat": datetime.utcnow(),
+        "exp": datetime.utcnow() + timedelta(hours=1),
+        "iss": "your-app-name",
+        "jti": secrets.token_hex(16),  # unique token ID for denylist
+    }
+    return jwt.encode(payload, SECRET, algorithm="HS256")
+
+# VERIFICATION — explicit algorithm, validate all claims
+def verify_token(token: str) -> dict:
+    try:
+        payload = jwt.decode(
+            token,
+            SECRET,
+            algorithms=["HS256"],          # whitelist — never accept list from token
+            options={
+                "require": ["exp", "iat", "iss", "sub"],
+                "verify_exp": True,
+                "verify_iss": True,
+            },
+            issuer="your-app-name",
+        )
+        # Additional check: is this token in the denylist?
+        if is_denylisted(payload["jti"]):
+            raise ValueError("Token revoked")
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise ValueError("Token expired")
+    except jwt.InvalidAlgorithmError:
+        raise ValueError("Invalid algorithm")
+    except jwt.InvalidTokenError:
+        raise ValueError("Invalid token")
+
+The denylist pattern — the only way to truly "invalidate" a JWT before its expiry is to maintain a server-side denylist of revoked jti (JWT ID) values. This partially defeats the stateless advantage but is necessary for logout functionality.
+
+
+
+Part 5: Interview questions — with full answers
+Now the hardest part. These are questions I've seen in senior AppSec and product security interviews. I'll give you the answer structure, not just the answer.
+
+Q1: "A developer tells you they've secured their API with JWTs and there's no need for session management. What concerns do you raise?"
+Structure your answer around three problems: revocation, secret management, and payload sensitivity.
+Tell them: JWTs solve stateless authentication but introduce three problems the developer may not have considered. First, revocation — if a token is stolen or a user logs out, you cannot invalidate the token without a denylist, which reintroduces server-side state. Second, the payload is base64-encoded not encrypted — any sensitive data in claims (email, role, PII) is visible to anyone who intercepts or decodes the token. Third, the security of the entire system depends on keeping the secret key safe — if it's in environment variables, how is it rotated, stored, and audited? JWTs are not more secure than sessions by default, they're differently architected with different tradeoffs.
+
+Q2: "You're doing a pentest and you find a JWT using RS256. Walk me through every attack you'd attempt."
+Start with recon: get the public key from JWKS endpoint. Check for jku, x5u, or jwk in the header — try hosting your own key. Try algorithm confusion: downgrade to HS256 using the public key as the HMAC secret. Check the kid parameter for SQL injection and path traversal. Check if alg: none is accepted. Look at the payload for privilege escalation claims. Test expiry handling by replaying expired tokens. If the token contains a jti, test whether logout actually denylists it.
+
+Q3: "What's the difference between JWT authentication and JWT authorization? Why does it matter for security?"
+Authentication answers "who are you?" — the JWT proves identity via signature. Authorization answers "what can you do?" — the claims inside the JWT (role, permissions) control access. The distinction matters because developers often over-trust the authorization claims. A valid signature proves the token was issued by your server, but it doesn't prevent a user from finding a logic flaw that lets them get a token with elevated claims in the first place. Authorization decisions should always be re-validated server-side against the current state of permissions — the JWT tells you who the user was when the token was issued, not who they are right now.
+
+Q4: "A company uses HS256 JWTs. They rotate their secret key every 90 days. A user logs in, gets a token valid for 24 hours, and the key is rotated 2 hours later. What happens? How do you design around this?"
+The token becomes unverifiable immediately after rotation — the signature was created with the old key, verification uses the new key, it fails. Users get logged out mid-session. The solution is key versioning: include a kid in the token header that maps to the old key, keep old keys in a versioned keystore for their validity window, retire them only when no tokens signed with that key can still be valid. This is one reason RS256 with a key management service is preferable at scale — you can publish multiple public keys simultaneously and rotate gracefully.
+
+Q5: "You find a JWT where the payload contains "role": "user". You modify it to "role": "admin", resign it with a blank secret, and the server accepts it. What went wrong and what's the remediation?"
+Two things failed: the signature verification accepted a blank secret (meaning the server's secret was empty or the library accepted any signature), and the algorithm was likely exploitable via alg: none or the kid path traversal to /dev/null. The remediation layers are: enforce a strong random secret (minimum 256 bits), explicitly whitelist allowed algorithms (not none), validate that the secret is non-empty at startup, and add integration tests that verify a tampered token is rejected. If this is in production, all active tokens must be considered compromised — rotate the secret immediately, invalidate all sessions, and require re-authentication.
+
+Q6: Scenario — "A fintech API issues 30-day JWTs. A user's account is compromised. The attacker has a valid token. The user changes their password. Does the attacker still have access?"
+Yes — unless the application maintains a denylist. Password change does not invalidate existing JWTs. The attacker's token is cryptographically valid for 30 days regardless of the password change. The correct implementation: on password change, add all active tokens for that user to the denylist (using jti tracking), or include a password_hash_version claim in the token and invalidate tokens whose version doesn't match the current password hash. Better architecture: use short-lived access tokens (15 minutes) with refresh tokens, and invalidate refresh tokens on password change.
+
+Q7: "What's the difference between alg: none and algorithm confusion attacks? When would you use each?"
+alg: none exploits libraries that accept the spec's "no signature" algorithm — you simply remove the signature and claim none is needed. It requires no cryptographic knowledge and works when the library explicitly accepts none. Algorithm confusion requires knowing the server's public key and exploits the asymmetric/symmetric mismatch — you use the public key as an HMAC secret when downgrading from RS256 to HS256. Use alg: none when the library version is known to be vulnerable or when testing permissive implementations. Use algorithm confusion when the server uses RS256 and you've obtained the public key — it's more sophisticated and works against libraries that reject none but don't lock down algorithm selection.
+
+Cheatsheet
+jwt_tool cheat sheet
+python3 jwt_tool.py <token> -X a          # alg:none attack
+python3 jwt_tool.py <token> -X s          # algorithm confusion (RS256→HS256)
+python3 jwt_tool.py <token> -X i          # inject jwk header
+python3 jwt_tool.py <token> -C -d wordlist # brute-force secret
+python3 jwt_tool.py <token> -I -pc role admin  # inject claim
+python3 jwt_tool.py <token> -X k -pk pub.pem   # jku/x5u attack
+
+hashcat for HS256 brute force
+hashcat -a 0 -m 16500 <token> /usr/share/wordlists/rockyou.txt
+# -m 16500 = JWT mode
+# offline attack — no server interaction needed
+
+Fixes & Secure Code
+Algorithm whitelisting
+# WRONG
+decoded = jwt.decode(token, key)  # accepts any algorithm
+
+# CORRECT
+decoded = jwt.decode(token, key, algorithms=["HS256"])
+# or RS256 — never include 'none', never accept from token header
+
+
+Strong secret key generation
+import secrets, os
+# Generate — do once, store in secrets manager
+SECRET = secrets.token_hex(32)  # 256-bit = 32 bytes = 64 hex chars
+
+# Load from environment — never hardcode
+SECRET = os.environ.get("JWT_SECRET")
+if not SECRET or len(SECRET) < 32:
+    raise RuntimeError("JWT secret missing or too short")
+
+
+Full claim validation
+decoded = jwt.decode(
+    token,
+    SECRET,
+    algorithms=["HS256"],
+    options={
+        "require": ["exp", "iat", "iss", "sub", "jti"],
+        "verify_exp": True,
+        "verify_iss": True,
+    },
+    issuer="your-app-name",
+    audience="your-app-name",  # if using aud
+)
+
+
+Token revocation with denylist
+# On issue — generate unique jti
+import secrets as s
+payload = {
+    "sub": user_id,
+    "jti": s.token_hex(16),  # unique per token
+    "exp": ...,
+}
+
+# On logout — add jti to denylist (Redis recommended)
+redis_client.setex(f"denylist:{jti}", ttl_seconds, "1")
+
+# On verify — check denylist before accepting
+if redis_client.get(f"denylist:{payload['jti']}"):
+    raise ValueError("Token revoked")
+
+
+Short lived tokens +  refresh tokens
+# Access token: short lived (15 minutes)
+access_token = jwt.encode(
+    {"sub": uid, "exp": now + timedelta(minutes=15)}, SECRET)
+
+# Refresh token: longer lived, stored server-side
+refresh_token = secrets.token_hex(32)
+db.store_refresh_token(uid, refresh_token, expires=now + timedelta(days=30))
+
+# On refresh: validate refresh token in DB, issue new access token
+# On logout: delete refresh token from DB
+# Access token expires naturally — no denylist needed for 15min tokens
+
+
+kid parameter safe handling
+# WRONG — kid used in query directly
+key = db.query(f"SELECT key FROM keys WHERE id='{kid}'")
+
+# WRONG — kid used as file path
+key = open(f"/keys/{kid}.pem").read()
+
+# CORRECT — server-side map, kid never touches query/path
+KEY_MAP = {
+    "key-2024-01": load_key("key-2024-01.pem"),
+    "key-2024-04": load_key("key-2024-04.pem"),
+}
+if kid not in KEY_MAP:
+    raise ValueError("Unknown key ID")
+key = KEY_MAP[kid]
